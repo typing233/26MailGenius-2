@@ -17,11 +17,22 @@ from app.utils.csv_processor import generate_csv_export_line
 
 router = APIRouter(prefix="/import-export", tags=["import_export"])
 
+UPLOAD_CHUNK_SIZE = 64 * 1024  # 64KB chunks for streaming
+
 
 def _get_service(db: AsyncSession, user: CurrentUser) -> ImportService:
     tq = TenantQuery(db, user.tenant_id)
     audit = AuditService(db, user.tenant_id, user.id)
     return ImportService(db, tq, audit)
+
+
+async def _stream_upload(file: UploadFile):
+    """Async generator that yields file chunks without loading the whole file."""
+    while True:
+        chunk = await file.read(UPLOAD_CHUNK_SIZE)
+        if not chunk:
+            break
+        yield chunk
 
 
 @router.post("/import", response_model=ImportJobResponse, status_code=202)
@@ -31,10 +42,9 @@ async def import_subscribers(
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = require_permissions(Permission.SUBSCRIBER_IMPORT),
 ):
-    content = await file.read()
     service = _get_service(db, current_user)
     job = await service.initiate_import(
-        content=content,
+        file_reader=_stream_upload(file),
         filename=file.filename or "upload.csv",
         tenant_id=current_user.tenant_id,
         user_id=current_user.id,

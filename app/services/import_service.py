@@ -11,7 +11,7 @@ from app.database import async_session_factory
 from app.models.import_job import ImportJob
 from app.models.subscriber import Subscriber
 from app.services.audit_service import AuditService
-from app.utils.csv_processor import parse_csv_chunks, validate_csv_row
+from app.utils.csv_processor import parse_csv_chunks_streaming, validate_csv_row
 
 
 class ImportService:
@@ -21,12 +21,12 @@ class ImportService:
         self.audit = audit
 
     async def initiate_import(
-        self, content: bytes, filename: str, tenant_id: uuid.UUID, user_id: uuid.UUID, dedup_key: str | None = None
+        self, file_reader, filename: str, tenant_id: uuid.UUID, user_id: uuid.UUID, dedup_key: str | None = None
     ) -> ImportJob:
-        # Idempotent retry check
+        # Idempotent retry: if dedup_key exists for any non-failed status, return the existing job
         if dedup_key:
             existing = await self._find_by_dedup_key(tenant_id, dedup_key)
-            if existing and existing.status in ("completed", "partial"):
+            if existing and existing.status in ("pending", "processing", "completed", "partial"):
                 return existing
 
         job = ImportJob(
@@ -39,14 +39,14 @@ class ImportService:
         self.session.add(job)
         await self.session.commit()
 
-        # Launch background processing
-        asyncio.create_task(self._process_import(job.id, content, tenant_id))
+        # Launch background processing with the streaming reader
+        asyncio.create_task(self._process_import(job.id, file_reader, tenant_id))
         return job
 
     async def get_job_status(self, job_id: uuid.UUID) -> ImportJob:
         return await self.tq.get_or_404(ImportJob, job_id)
 
-    async def _process_import(self, job_id: uuid.UUID, content: bytes, tenant_id: uuid.UUID) -> None:
+    async def _process_import(self, job_id: uuid.UUID, file_reader, tenant_id: uuid.UUID) -> None:
         async with async_session_factory() as session:
             stmt = select(ImportJob).where(ImportJob.id == job_id)
             result = await session.execute(stmt)
@@ -61,7 +61,7 @@ class ImportService:
             success_rows = 0
 
             try:
-                async for chunk in parse_csv_chunks(content, settings.import_chunk_size):
+                async for chunk in parse_csv_chunks_streaming(file_reader, settings.import_chunk_size):
                     chunk_errors = await self._persist_chunk(session, tenant_id, chunk)
                     total_rows += len(chunk)
                     success_rows += len(chunk) - len(chunk_errors)
@@ -91,7 +91,7 @@ class ImportService:
                     errors.append({"row": row.get("_row_num"), "error": error})
                     continue
 
-                # Check duplicate
+                # Check duplicate within tenant
                 existing_stmt = (
                     select(Subscriber)
                     .where(

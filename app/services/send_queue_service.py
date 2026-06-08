@@ -35,6 +35,19 @@ class SendQueueService(SendQueueInterface):
         self.tq = tq
 
     async def enqueue(self, data: SendQueueJobCreate) -> SendQueueJob:
+        # Validate subscriber belongs to this tenant
+        from app.models.subscriber import Subscriber
+        subscriber = await self.tq.get(Subscriber, data.subscriber_id)
+        if subscriber is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Subscriber not found in this tenant")
+
+        # Validate list belongs to this tenant if provided
+        if data.list_id is not None:
+            from app.models.mailing_list import MailingList
+            ml = await self.tq.get(MailingList, data.list_id)
+            if ml is None:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mailing list not found in this tenant")
+
         job = SendQueueJob(
             tenant_id=self.tq.tenant_id,
             campaign_id=data.campaign_id,

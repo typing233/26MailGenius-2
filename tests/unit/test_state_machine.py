@@ -8,6 +8,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.confirmation import ConfirmationToken
+from app.models.mailing_list import ListSubscriber, MailingList
 from app.models.subscriber import Subscriber
 from app.models.tenant import Tenant
 from app.services.audit_service import AuditService
@@ -30,6 +31,30 @@ class TestStateMachine:
         subscriber = await service.confirm_token(token)
         assert subscriber.status == "confirmed"
 
+    async def test_subscribe_with_list_id_associates_subscriber(self, setup):
+        service, session, tenant = setup
+
+        # Create a list
+        ml = MailingList(id=uuid.uuid4(), tenant_id=tenant.id, name="Test List SM")
+        session.add(ml)
+        await session.flush()
+
+        token = await service.initiate_subscribe("list-assoc@test.com", source="test", list_id=ml.id, name="Test User")
+        subscriber = await service.confirm_token(token)
+        assert subscriber.status == "confirmed"
+        assert subscriber.name == "Test User"
+
+        # Verify list association was created
+        from sqlalchemy import select
+        stmt = select(ListSubscriber).where(
+            ListSubscriber.subscriber_id == subscriber.id,
+            ListSubscriber.list_id == ml.id,
+            ListSubscriber.unsubscribed_at.is_(None),
+        )
+        result = await session.execute(stmt)
+        assoc = result.scalar_one_or_none()
+        assert assoc is not None
+
     async def test_unsubscribe_flow_confirmed_to_unsubscribed(self, setup):
         service, session, tenant = setup
         # First subscribe
@@ -38,8 +63,6 @@ class TestStateMachine:
 
         # Get subscriber
         from sqlalchemy import select
-        from app.models.subscriber import Subscriber
-
         stmt = select(Subscriber).where(Subscriber.email == "unsub@test.com", Subscriber.tenant_id == tenant.id)
         result = await session.execute(stmt)
         subscriber = result.scalar_one()
@@ -56,7 +79,6 @@ class TestStateMachine:
         await service.confirm_token(token)
 
         from sqlalchemy import select
-
         stmt = select(Subscriber).where(Subscriber.email == "resub@test.com", Subscriber.tenant_id == tenant.id)
         result = await session.execute(stmt)
         subscriber = result.scalar_one()
@@ -65,15 +87,18 @@ class TestStateMachine:
         unsub_token = await service.initiate_unsubscribe(subscriber.id)
         await service.confirm_token(unsub_token)
 
-        # Resubscribe goes back to pending
+        # Verify unsubscribed
+        await session.refresh(subscriber)
+        assert subscriber.status == "unsubscribed"
+
+        # Resubscribe — should go directly to confirmed (shortcut unsubscribed -> confirmed)
         new_token = await service.initiate_subscribe("resub@test.com", source="test")
         resubbed = await service.confirm_token(new_token)
         assert resubbed.status == "confirmed"
 
-    async def test_invalid_transition_raises_error(self, db_session: AsyncSession, tenant_a: Tenant):
-        # Create a subscriber already in "pending" status and try to unsubscribe directly
+    async def test_invalid_transition_pending_cannot_unsubscribe(self, db_session: AsyncSession, tenant_a: Tenant):
         subscriber = Subscriber(
-            id=uuid.uuid4(), tenant_id=tenant_a.id, email="invalid@test.com", status="pending",
+            id=uuid.uuid4(), tenant_id=tenant_a.id, email="invalid-trans@test.com", status="pending",
         )
         db_session.add(subscriber)
         await db_session.flush()
@@ -94,3 +119,39 @@ class TestStateMachine:
 
         with pytest.raises(ValueError, match="Invalid state transition"):
             await service.confirm_token(raw_token)
+
+    async def test_double_confirm_same_token_fails(self, setup):
+        """Token replay protection: using same token twice fails."""
+        service, session, tenant = setup
+        token = await service.initiate_subscribe("replay@test.com", source="test")
+        await service.confirm_token(token)
+
+        # Second use of same token should fail
+        with pytest.raises(ValueError, match="invalid, expired, or already used"):
+            await service.confirm_token(token)
+
+    async def test_unsubscribe_from_specific_list(self, setup):
+        """Unsubscribe from a specific list removes the association."""
+        service, session, tenant = setup
+
+        ml = MailingList(id=uuid.uuid4(), tenant_id=tenant.id, name="Unsub List Test")
+        session.add(ml)
+        await session.flush()
+
+        # Subscribe to list
+        token = await service.initiate_subscribe("list-unsub@test.com", source="test", list_id=ml.id)
+        subscriber = await service.confirm_token(token)
+
+        # Unsubscribe from list
+        unsub_token = await service.initiate_unsubscribe(subscriber.id, list_id=ml.id)
+        await service.confirm_token(unsub_token)
+
+        # Verify list association is removed
+        from sqlalchemy import select
+        stmt = select(ListSubscriber).where(
+            ListSubscriber.subscriber_id == subscriber.id,
+            ListSubscriber.list_id == ml.id,
+            ListSubscriber.unsubscribed_at.is_(None),
+        )
+        result = await session.execute(stmt)
+        assert result.scalar_one_or_none() is None

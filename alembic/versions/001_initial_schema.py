@@ -43,7 +43,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("ix_users_tenant_id", "users", ["tenant_id"])
-    op.create_unique_constraint("uq_users_tenant_email", "users", ["tenant_id", "email"])
+    op.create_index("uq_users_tenant_email_active", "users", ["tenant_id", "email"], unique=True, postgresql_where=sa.text("deleted_at IS NULL"))
 
     # User Roles
     op.create_table(
@@ -86,7 +86,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("ix_subscribers_tenant_id", "subscribers", ["tenant_id"])
-    op.create_unique_constraint("uq_subscribers_tenant_email", "subscribers", ["tenant_id", "email"])
+    op.create_index("uq_subscribers_tenant_email_active", "subscribers", ["tenant_id", "email"], unique=True, postgresql_where=sa.text("deleted_at IS NULL"))
     op.create_index("ix_subscribers_tenant_status", "subscribers", ["tenant_id", "status"])
 
     # Mailing Lists
@@ -103,7 +103,7 @@ def upgrade() -> None:
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     )
     op.create_index("ix_mailing_lists_tenant_id", "mailing_lists", ["tenant_id"])
-    op.create_unique_constraint("uq_mailing_lists_tenant_name", "mailing_lists", ["tenant_id", "name"])
+    op.create_index("uq_mailing_lists_tenant_name_active", "mailing_lists", ["tenant_id", "name"], unique=True, postgresql_where=sa.text("deleted_at IS NULL"))
 
     # List Subscribers (M2M)
     op.create_table(
@@ -121,7 +121,7 @@ def upgrade() -> None:
     op.create_index("ix_list_subscribers_tenant_id", "list_subscribers", ["tenant_id"])
     op.create_index("ix_list_subscribers_list", "list_subscribers", ["list_id"])
     op.create_index("ix_list_subscribers_subscriber", "list_subscribers", ["subscriber_id"])
-    op.create_unique_constraint("uq_list_subscribers_active", "list_subscribers", ["tenant_id", "list_id", "subscriber_id"])
+    op.create_index("uq_list_subscribers_active", "list_subscribers", ["tenant_id", "list_id", "subscriber_id"], unique=True, postgresql_where=sa.text("unsubscribed_at IS NULL"))
 
     # Confirmation Tokens
     op.create_table(
@@ -129,6 +129,7 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
         sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=False),
         sa.Column("subscriber_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("subscribers.id"), nullable=False),
+        sa.Column("list_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("mailing_lists.id"), nullable=True),
         sa.Column("token_hash", sa.String(255), nullable=False, unique=True),
         sa.Column("action", sa.String(20), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),

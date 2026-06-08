@@ -1,11 +1,14 @@
+import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.dependencies import CurrentUser, get_current_user
-from app.schemas.subscriber import SubscriberResponse
+from app.models.confirmation import ConfirmationToken
+from app.models.tenant import Tenant
 from app.services.audit_service import AuditService
 from app.services.subscription_service import SubscriptionService
 
@@ -24,27 +27,27 @@ async def initiate_subscribe(
 ):
     # Anti-abuse: honeypot check
     if website:
-        return {"message": "Thank you for subscribing!"}  # Silent rejection
+        return {"message": "Thank you for subscribing!"}
+
+    # Validate tenant exists
+    stmt = select(Tenant).where(Tenant.id == tenant_id, Tenant.deleted_at.is_(None))
+    result = await db.execute(stmt)
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid tenant")
 
     audit = AuditService(db, tenant_id, user_id=None, ip_address=request.client.host if request.client else None)
     service = SubscriptionService(db, tenant_id, audit)
 
     try:
-        token = await service.initiate_subscribe(email, source="form")
-    except Exception as e:
+        token = await service.initiate_subscribe(email, source="form", list_id=list_id, name=name)
+    except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-    # In production, send confirmation email with token. Here we return token for testing.
     return {"message": "Confirmation email sent", "confirmation_token": token}
 
 
 @router.post("/confirm/{token}")
 async def confirm_subscription(token: str, db: AsyncSession = Depends(get_db)):
-    # We need to find the tenant from the token — tokens are globally unique by hash
-    from app.models.confirmation import ConfirmationToken
-    from sqlalchemy import select
-    import hashlib
-
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     stmt = select(ConfirmationToken).where(ConfirmationToken.token_hash == token_hash)
     result = await db.execute(stmt)
@@ -67,6 +70,7 @@ async def confirm_subscription(token: str, db: AsyncSession = Depends(get_db)):
 @router.post("/unsubscribe/{subscriber_id}")
 async def initiate_unsubscribe(
     subscriber_id: uuid.UUID,
+    list_id: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ):
@@ -74,8 +78,8 @@ async def initiate_unsubscribe(
     service = SubscriptionService(db, current_user.tenant_id, audit)
 
     try:
-        token = await service.initiate_unsubscribe(subscriber_id)
-    except Exception as e:
+        token = await service.initiate_unsubscribe(subscriber_id, list_id=list_id)
+    except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     return {"message": "Unsubscribe confirmation sent", "confirmation_token": token}

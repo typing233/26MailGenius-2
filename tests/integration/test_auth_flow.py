@@ -30,20 +30,33 @@ class TestAuthFlow:
         assert resp.status_code == 409
 
     async def test_login_success(self, client: AsyncClient):
-        # First register
         await client.post("/api/v1/auth/register", json={
             "email": "login@example.com",
             "password": "securepass123",
             "tenant_name": "Login Tenant",
             "tenant_slug": "login-tenant",
         })
-        # Then login
         resp = await client.post("/api/v1/auth/login", json={
             "email": "login@example.com",
             "password": "securepass123",
+            "tenant_slug": "login-tenant",
         })
         assert resp.status_code == 200
         assert "access_token" in resp.json()
+
+    async def test_login_wrong_tenant_slug_fails(self, client: AsyncClient):
+        await client.post("/api/v1/auth/register", json={
+            "email": "tenantfail@example.com",
+            "password": "securepass123",
+            "tenant_name": "TenantFail",
+            "tenant_slug": "tenant-fail",
+        })
+        resp = await client.post("/api/v1/auth/login", json={
+            "email": "tenantfail@example.com",
+            "password": "securepass123",
+            "tenant_slug": "wrong-slug",
+        })
+        assert resp.status_code == 401
 
     async def test_login_wrong_password(self, client: AsyncClient):
         await client.post("/api/v1/auth/register", json={
@@ -55,6 +68,7 @@ class TestAuthFlow:
         resp = await client.post("/api/v1/auth/login", json={
             "email": "wrongpw@example.com",
             "password": "wrongpassword",
+            "tenant_slug": "wrongpw-tenant",
         })
         assert resp.status_code == 401
 
@@ -92,4 +106,26 @@ class TestAuthFlow:
 
     async def test_access_protected_route_without_token(self, client: AsyncClient):
         resp = await client.get("/api/v1/subscribers")
+        assert resp.status_code == 401
+
+    async def test_same_email_different_tenants_isolated(self, client: AsyncClient):
+        """Same email in different tenants should not cross-authenticate."""
+        await client.post("/api/v1/auth/register", json={
+            "email": "shared@example.com",
+            "password": "password-a",
+            "tenant_name": "Tenant A Iso",
+            "tenant_slug": "iso-tenant-a",
+        })
+        await client.post("/api/v1/auth/register", json={
+            "email": "shared@example.com",
+            "password": "password-b",
+            "tenant_name": "Tenant B Iso",
+            "tenant_slug": "iso-tenant-b",
+        })
+        # Login with tenant A password on tenant B should fail
+        resp = await client.post("/api/v1/auth/login", json={
+            "email": "shared@example.com",
+            "password": "password-a",
+            "tenant_slug": "iso-tenant-b",
+        })
         assert resp.status_code == 401

@@ -29,7 +29,7 @@ async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
 async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     service = AuthService(db)
     try:
-        user, tokens = await service.login(data.email, data.password)
+        user, tokens = await service.login(data.email, data.password, data.tenant_slug)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
     return tokens

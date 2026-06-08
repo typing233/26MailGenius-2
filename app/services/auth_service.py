@@ -42,8 +42,21 @@ class AuthService:
         tokens = await self._issue_tokens(user, ["tenant_admin"])
         return user, tokens
 
-    async def login(self, email: str, password: str) -> tuple[User, TokenResponse]:
-        stmt = select(User).where(User.email == email, User.deleted_at.is_(None), User.is_active.is_(True))
+    async def login(self, email: str, password: str, tenant_slug: str) -> tuple[User, TokenResponse]:
+        # Resolve tenant by slug to ensure login is tenant-scoped
+        tenant_stmt = select(Tenant).where(Tenant.slug == tenant_slug, Tenant.deleted_at.is_(None))
+        tenant_result = await self.session.execute(tenant_stmt)
+        tenant = tenant_result.scalar_one_or_none()
+
+        if tenant is None:
+            raise ValueError("Invalid email or password")
+
+        stmt = select(User).where(
+            User.email == email,
+            User.tenant_id == tenant.id,
+            User.deleted_at.is_(None),
+            User.is_active.is_(True),
+        )
         result = await self.session.execute(stmt)
         user = result.scalar_one_or_none()
 
