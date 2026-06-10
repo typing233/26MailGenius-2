@@ -208,30 +208,38 @@ def process_unsubscribe(payload: dict):
 
         effective_tenant_id = tenant_id or subscriber.tenant_id
 
-        # Record tracking event
+        # Record tracking event — only if campaign belongs to same tenant
         if campaign_id:
-            now = datetime.now(timezone.utc)
-            fingerprint = f"unsubscribe:{campaign_id}:{subscriber_id}"
-
-            existing = db.execute(
-                select(TrackingEvent.id).where(TrackingEvent.fingerprint == fingerprint)
-            ).scalar_one_or_none()
-            if not existing:
-                event = TrackingEvent(
-                    tenant_id=effective_tenant_id,
-                    campaign_id=campaign_id,
-                    subscriber_id=subscriber_id,
-                    event_type="unsubscribe",
-                    occurred_at=now,
-                    fingerprint=fingerprint,
-                    is_first=True,
+            campaign = db.execute(
+                select(Campaign).where(
+                    Campaign.id == campaign_id,
+                    Campaign.tenant_id == subscriber.tenant_id,
                 )
-                db.add(event)
+            ).scalar_one_or_none()
 
-                # Update campaign unsubscribed_count
-                db.execute(update(Campaign).where(
-                    Campaign.id == campaign_id
-                ).values(unsubscribed_count=Campaign.unsubscribed_count + 1))
+            if campaign:
+                now = datetime.now(timezone.utc)
+                fingerprint = f"unsubscribe:{campaign_id}:{subscriber_id}"
+
+                existing = db.execute(
+                    select(TrackingEvent.id).where(TrackingEvent.fingerprint == fingerprint)
+                ).scalar_one_or_none()
+                if not existing:
+                    event = TrackingEvent(
+                        tenant_id=subscriber.tenant_id,
+                        campaign_id=campaign_id,
+                        subscriber_id=subscriber_id,
+                        event_type="unsubscribe",
+                        occurred_at=now,
+                        fingerprint=fingerprint,
+                        is_first=True,
+                    )
+                    db.add(event)
+
+                    db.execute(update(Campaign).where(
+                        Campaign.id == campaign_id,
+                        Campaign.tenant_id == subscriber.tenant_id,
+                    ).values(unsubscribed_count=Campaign.unsubscribed_count + 1))
 
         # Add to suppression list
         existing_suppression = db.execute(

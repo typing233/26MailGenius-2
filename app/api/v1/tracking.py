@@ -68,18 +68,37 @@ async def tracking_click(
     if not link:
         return Response(status_code=404, content="Link not found")
 
-    # Find the subscriber from the referer job (best effort from campaign)
-    # We encode subscriber info in the tracking URL in practice
-    from app.worker.tasks.tracking_tasks import record_tracking_event
-    record_tracking_event.delay({
-        "tenant_id": str(link.tenant_id),
-        "campaign_id": str(link.campaign_id),
-        "subscriber_id": request.query_params.get("sid", "00000000-0000-0000-0000-000000000000"),
-        "event_type": "click",
-        "link_url": link.original_url,
-        "user_agent": request.headers.get("user-agent", ""),
-        "ip_address": request.client.host if request.client else None,
-    })
+    # Validate sid — must be a valid subscriber in this campaign
+    sid_raw = request.query_params.get("sid")
+    subscriber_id = None
+    if sid_raw:
+        try:
+            sid_uuid = uuid.UUID(sid_raw)
+        except ValueError:
+            sid_uuid = None
+
+        if sid_uuid:
+            from app.models.campaign import CampaignJob
+            valid = await db.execute(
+                select(CampaignJob.id).where(
+                    CampaignJob.campaign_id == link.campaign_id,
+                    CampaignJob.subscriber_id == sid_uuid,
+                )
+            )
+            if valid.scalar_one_or_none() is not None:
+                subscriber_id = str(sid_uuid)
+
+    if subscriber_id:
+        from app.worker.tasks.tracking_tasks import record_tracking_event
+        record_tracking_event.delay({
+            "tenant_id": str(link.tenant_id),
+            "campaign_id": str(link.campaign_id),
+            "subscriber_id": subscriber_id,
+            "event_type": "click",
+            "link_url": link.original_url,
+            "user_agent": request.headers.get("user-agent", ""),
+            "ip_address": request.client.host if request.client else None,
+        })
 
     return RedirectResponse(
         url=link.original_url,

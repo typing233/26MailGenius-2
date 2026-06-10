@@ -263,63 +263,48 @@ def send_email(self, job_id: str):
             msg.attach(MIMEText(rendered_text, "plain"))
         msg.attach(MIMEText(rendered_html, "html"))
 
-        # Attempt sending — with channel failover on failure
-        password = decrypt_value(channel.password_encrypted) if channel.password_encrypted else None
-        try:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            message_id = loop.run_until_complete(
-                _async_send(channel.host, channel.port, channel.use_tls, channel.username, password, msg)
-            )
-            loop.close()
+        # Attempt sending — loop through all channels by priority on failure
+        import asyncio
+        last_error = None
+        current_channel = channel
 
-            # Success
-            job.status = "sent"
-            job.message_id = message_id
-            job.sent_at = datetime.now(timezone.utc)
-            channel.last_success_at = datetime.now(timezone.utc)
-            channel.consecutive_failures = 0
-            campaign.sent_count += 1
-            db.commit()
+        while current_channel:
+            password = decrypt_value(current_channel.password_encrypted) if current_channel.password_encrypted else None
+            try:
+                loop = asyncio.new_event_loop()
+                message_id = loop.run_until_complete(
+                    _async_send(current_channel.host, current_channel.port, current_channel.use_tls, current_channel.username, password, msg)
+                )
+                loop.close()
 
-            # Record rate limit counters
-            _record_channel_send(channel.id)
-            _record_tenant_send(campaign.tenant_id)
+                # Success — commit job status first (critical path)
+                job.status = "sent"
+                job.message_id = message_id
+                job.sent_at = datetime.now(timezone.utc)
+                current_channel.last_success_at = datetime.now(timezone.utc)
+                current_channel.consecutive_failures = 0
+                campaign.sent_count += 1
+                db.commit()
 
-        except Exception as e:
-            channel.last_failure_at = datetime.now(timezone.utc)
-            channel.consecutive_failures += 1
-            db.commit()
-
-            # Try failover to next channel
-            tried_channel_ids.append(channel.id)
-            fallback_channel = _select_channel_with_failover(db, campaign.tenant_id, exclude_ids=tried_channel_ids)
-            if fallback_channel:
-                fb_password = decrypt_value(fallback_channel.password_encrypted) if fallback_channel.password_encrypted else None
+                # Record rate limit counters (non-critical — failures are logged only)
                 try:
-                    loop = asyncio.new_event_loop()
-                    message_id = loop.run_until_complete(
-                        _async_send(fallback_channel.host, fallback_channel.port, fallback_channel.use_tls, fallback_channel.username, fb_password, msg)
-                    )
-                    loop.close()
-
-                    job.status = "sent"
-                    job.message_id = message_id
-                    job.sent_at = datetime.now(timezone.utc)
-                    fallback_channel.last_success_at = datetime.now(timezone.utc)
-                    fallback_channel.consecutive_failures = 0
-                    campaign.sent_count += 1
-                    db.commit()
-                    _record_channel_send(fallback_channel.id)
+                    _record_channel_send(current_channel.id)
                     _record_tenant_send(campaign.tenant_id)
-                    return
-                except Exception as e2:
-                    fallback_channel.last_failure_at = datetime.now(timezone.utc)
-                    fallback_channel.consecutive_failures += 1
-                    db.commit()
+                except Exception as redis_err:
+                    logger.warning(f"Redis counter update failed (non-fatal): {redis_err}")
 
-            # All channels failed — retry with backoff
-            _handle_retry(self, job, db, f"SMTP send failed: {e}")
+                return
+
+            except Exception as e:
+                last_error = e
+                current_channel.last_failure_at = datetime.now(timezone.utc)
+                current_channel.consecutive_failures += 1
+                db.commit()
+                tried_channel_ids.append(current_channel.id)
+                current_channel = _select_channel_with_failover(db, campaign.tenant_id, exclude_ids=tried_channel_ids)
+
+        # All channels exhausted — retry with backoff
+        _handle_retry(self, job, db, f"SMTP send failed (all channels exhausted): {last_error}")
 
 
 async def _async_send(host, port, use_tls, username, password, msg) -> str:
