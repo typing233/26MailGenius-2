@@ -19,6 +19,17 @@ class Permission(str, Enum):
     AUDIT_READ = "audit:read"
     SEND_QUEUE_READ = "send_queue:read"
     SEND_QUEUE_WRITE = "send_queue:write"
+    # Phase 2
+    TEMPLATE_READ = "template:read"
+    TEMPLATE_WRITE = "template:write"
+    CAMPAIGN_READ = "campaign:read"
+    CAMPAIGN_WRITE = "campaign:write"
+    SEGMENT_READ = "segment:read"
+    SEGMENT_WRITE = "segment:write"
+    CHANNEL_READ = "channel:read"
+    CHANNEL_WRITE = "channel:write"
+    TRACKING_READ = "tracking:read"
+    REPORT_READ = "report:read"
 
 
 ROLE_PERMISSIONS: dict[str, set[Permission]] = {
@@ -37,11 +48,25 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.AUDIT_READ,
         Permission.SEND_QUEUE_READ,
         Permission.SEND_QUEUE_WRITE,
+        Permission.TEMPLATE_READ,
+        Permission.TEMPLATE_WRITE,
+        Permission.CAMPAIGN_READ,
+        Permission.CAMPAIGN_WRITE,
+        Permission.SEGMENT_READ,
+        Permission.SEGMENT_WRITE,
+        Permission.CHANNEL_READ,
+        Permission.CHANNEL_WRITE,
+        Permission.TRACKING_READ,
+        Permission.REPORT_READ,
     },
     "member": {
         Permission.SUBSCRIBER_READ,
         Permission.SUBSCRIBER_WRITE,
         Permission.LIST_READ,
+        Permission.TEMPLATE_READ,
+        Permission.CAMPAIGN_READ,
+        Permission.SEGMENT_READ,
+        Permission.REPORT_READ,
     },
 }
 
