@@ -6,7 +6,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import CurrentUser, get_current_user
 from app.models.confirmation import ConfirmationToken
 from app.models.tenant import Tenant
 from app.services.audit_service import AuditService
@@ -71,15 +70,28 @@ async def confirm_subscription(token: str, db: AsyncSession = Depends(get_db)):
 async def initiate_unsubscribe(
     subscriber_id: uuid.UUID,
     list_id: uuid.UUID | None = None,
+    campaign: uuid.UUID | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user: CurrentUser = Depends(get_current_user),
 ):
-    audit = AuditService(db, current_user.tenant_id, current_user.id)
-    service = SubscriptionService(db, current_user.tenant_id, audit)
+    """Public one-click unsubscribe endpoint (RFC 8058). No auth required — used from List-Unsubscribe header."""
+    from app.models.subscriber import Subscriber
 
-    try:
-        token = await service.initiate_unsubscribe(subscriber_id, list_id=list_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    stmt = select(Subscriber).where(Subscriber.id == subscriber_id)
+    result = await db.execute(stmt)
+    subscriber = result.scalar_one_or_none()
+    if not subscriber:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscriber not found")
 
-    return {"message": "Unsubscribe confirmation sent", "confirmation_token": token}
+    # Mark subscriber as unsubscribed
+    subscriber.status = "unsubscribed"
+    await db.commit()
+
+    # Trigger tracking + suppression via Celery task
+    from app.worker.tasks.tracking_tasks import process_unsubscribe
+    process_unsubscribe.delay({
+        "subscriber_id": str(subscriber_id),
+        "campaign_id": str(campaign) if campaign else None,
+        "tenant_id": str(subscriber.tenant_id),
+    })
+
+    return {"message": "You have been unsubscribed successfully"}

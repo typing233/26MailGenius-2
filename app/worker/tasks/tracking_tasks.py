@@ -191,3 +191,64 @@ def process_complaint(payload: dict):
 
         subscriber.status = "unsubscribed"
         db.commit()
+
+
+@celery_app.task(queue="track")
+def process_unsubscribe(payload: dict):
+    with SyncSessionFactory() as db:
+        subscriber_id = uuid.UUID(payload["subscriber_id"])
+        campaign_id = uuid.UUID(payload["campaign_id"]) if payload.get("campaign_id") else None
+        tenant_id = uuid.UUID(payload["tenant_id"]) if payload.get("tenant_id") else None
+
+        subscriber = db.execute(
+            select(Subscriber).where(Subscriber.id == subscriber_id)
+        ).scalar_one_or_none()
+        if not subscriber:
+            return
+
+        effective_tenant_id = tenant_id or subscriber.tenant_id
+
+        # Record tracking event
+        if campaign_id:
+            now = datetime.now(timezone.utc)
+            fingerprint = f"unsubscribe:{campaign_id}:{subscriber_id}"
+
+            existing = db.execute(
+                select(TrackingEvent.id).where(TrackingEvent.fingerprint == fingerprint)
+            ).scalar_one_or_none()
+            if not existing:
+                event = TrackingEvent(
+                    tenant_id=effective_tenant_id,
+                    campaign_id=campaign_id,
+                    subscriber_id=subscriber_id,
+                    event_type="unsubscribe",
+                    occurred_at=now,
+                    fingerprint=fingerprint,
+                    is_first=True,
+                )
+                db.add(event)
+
+                # Update campaign unsubscribed_count
+                db.execute(update(Campaign).where(
+                    Campaign.id == campaign_id
+                ).values(unsubscribed_count=Campaign.unsubscribed_count + 1))
+
+        # Add to suppression list
+        existing_suppression = db.execute(
+            select(SuppressionEntry).where(
+                SuppressionEntry.tenant_id == effective_tenant_id,
+                SuppressionEntry.email == subscriber.email,
+            )
+        ).scalar_one_or_none()
+        if not existing_suppression:
+            suppression = SuppressionEntry(
+                tenant_id=effective_tenant_id,
+                email=subscriber.email,
+                reason="unsubscribe",
+                source=str(campaign_id) if campaign_id else "manual",
+            )
+            db.add(suppression)
+
+        # Update subscriber status
+        subscriber.status = "unsubscribed"
+        db.commit()

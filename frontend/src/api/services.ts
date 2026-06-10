@@ -1,5 +1,10 @@
 import client from './client';
 
+export const mailingListsApi = {
+  list: () => client.get('/lists'),
+  get: (id: string) => client.get(`/lists/${id}`),
+};
+
 export const segmentsApi = {
   list: () => client.get('/segments'),
   get: (id: string) => client.get(`/segments/${id}`),

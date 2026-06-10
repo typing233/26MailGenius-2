@@ -4,7 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Button, Card, DatePicker, Form, Input, InputNumber, message, Select, Steps } from 'antd';
 import { campaignsApi } from '../../api/campaigns';
 import { templatesApi } from '../../api/templates';
-import { segmentsApi } from '../../api/services';
+import { mailingListsApi, segmentsApi } from '../../api/services';
 
 export default function CampaignCreate() {
   const navigate = useNavigate();
@@ -19,6 +19,11 @@ export default function CampaignCreate() {
   const { data: segments } = useQuery({
     queryKey: ['segments-list'],
     queryFn: () => segmentsApi.list().then((r) => r.data),
+  });
+
+  const { data: mailingLists } = useQuery({
+    queryKey: ['mailing-lists'],
+    queryFn: () => mailingListsApi.list().then((r) => r.data),
   });
 
   const createMutation = useMutation({
@@ -59,11 +64,11 @@ export default function CampaignCreate() {
         )}
         {step === 2 && (
           <>
-            <Form.Item name="list_ids" label="Mailing Lists"><Select mode="multiple" placeholder="Select lists" options={[]} /></Form.Item>
+            <Form.Item name="list_ids" label="Mailing Lists"><Select mode="multiple" placeholder="Select lists" options={(mailingLists || []).map((l: any) => ({ value: l.id, label: l.name }))} /></Form.Item>
             <Form.Item name="segment_rule_ids" label="Segments">
               <Select mode="multiple" placeholder="Select segments" options={(segments || []).map((s: any) => ({ value: s.id, label: s.name }))} />
             </Form.Item>
-            <Form.Item name="exclusion_list_ids" label="Exclusion Lists"><Select mode="multiple" placeholder="Exclude lists" options={[]} /></Form.Item>
+            <Form.Item name="exclusion_list_ids" label="Exclusion Lists"><Select mode="multiple" placeholder="Exclude lists" options={(mailingLists || []).map((l: any) => ({ value: l.id, label: l.name }))} /></Form.Item>
           </>
         )}
         {step === 3 && (
